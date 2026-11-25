@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -70,6 +72,10 @@ class Engine(private val a: ComponentActivity) {
     var lang by mutableStateOf(prefs.getString("lang", "bn-BD") ?: "bn-BD")
     var natural by mutableStateOf(prefs.getBoolean("nat", true))
     var rain by mutableStateOf(prefs.getBoolean("rain", true))
+    var hud by mutableStateOf(prefs.getBoolean("hud", true))
+    val memory = mutableStateListOf<String>().apply { addAll((prefs.getString("mem", "") ?: "").split("\n").filter { it.isNotBlank() }) }
+    fun saveMem() { prefs.edit().putString("mem", memory.joinToString("\n")).apply() }
+    fun clearMem() { memory.clear(); saveMem() }
     private var active = false
     private var loop = false
     private var gen = 0
@@ -93,7 +99,7 @@ class Engine(private val a: ComponentActivity) {
     fun save() {
         prefs.edit().putString("key", apiKey.trim()).putString("model3", model.trim()).putString("ttsm", ttsModel.trim())
             .putString("voice", voice).putString("persona", persona).putString("lang", lang)
-            .putBoolean("nat", natural).putBoolean("rain", rain).apply()
+            .putBoolean("nat", natural).putBoolean("rain", rain).putBoolean("hud", hud).apply()
     }
 
     fun start() {
@@ -163,7 +169,14 @@ class Engine(private val a: ComponentActivity) {
             val r = runCatching { gemini(hist) }
             ui.post {
                 if (!active) return@post
-                r.onSuccess { log.add("model" to it); speak(it) }
+                r.onSuccess { raw ->
+                    Regex("\\[\\[MEM:(.*?)\\]\\]").findAll(raw).map { x -> x.groupValues[1].trim() }.filter { x -> x.isNotEmpty() }
+                        .forEach { x -> if (x !in memory) memory.add(x) }
+                    while (memory.size > 30) memory.removeAt(0)
+                    saveMem()
+                    val txt = raw.replace(Regex("\\[\\[MEM:.*?\\]\\]"), "").trim().ifBlank { "ঠিক আছে" }
+                    log.add("model" to txt); speak(txt)
+                }
                 r.onFailure { error = it.message ?: "Error"; stop() }
             }
         }.start()
@@ -187,7 +200,7 @@ class Engine(private val a: ComponentActivity) {
         h.forEach { (role, t) ->
             contents.put(JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", t))))
         }
-        val sys = SYS + (PERSONAS[persona] ?: "")
+        val sys = SYS + (PERSONAS[persona] ?: "") + " ব্যবহারকারী নিজের নাম বা স্থায়ী পছন্দ বললে উত্তরের একদম শেষে [[MEM: ছোট তথ্য]] যোগ করো; অন্যথায় যোগ করবে না।" + (if (memory.isEmpty()) "" else " তোমার জানা তথ্য: " + memory.joinToString("; "))
         val body = JSONObject().put("contents", contents)
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
         return JSONObject(post(model, body)).getJSONArray("candidates").getJSONObject(0)
@@ -280,10 +293,40 @@ fun Chips(opts: List<String>, sel: String, on: (String) -> Unit) {
 }
 
 @Composable
+fun ChatPane(e: Engine, modifier: Modifier = Modifier) {
+    var input by remember { mutableStateOf("") }
+    val ls = rememberLazyListState()
+    LaunchedEffect(e.log.size) { if (e.log.isNotEmpty()) ls.animateScrollToItem(e.log.lastIndex) }
+    Column(modifier) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = ls) {
+            items(e.log) { m ->
+                Text(m.second, color = if (m.first == "user") Color.White else CYAN, modifier = Modifier.padding(3.dp))
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(input, { input = it }, Modifier.weight(1f), singleLine = true, placeholder = { Text("টাইপ করে বলুন…") })
+            TextButton(onClick = { e.sendText(input); input = "" }) { Text("➤", color = CYAN) }
+        }
+    }
+}
+
+@Composable
+fun StatsPane(e: Engine, t: State<Float>) {
+    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+        Globe(t, Modifier.size(150.dp))
+        Column(Modifier.padding(start = 12.dp)) {
+            listOf("MODEL  ${e.model}", "VOICE  ${e.voice}", "MODE   ${e.persona}", "MSGS   ${e.log.size}", "MEMORY ${e.memory.size}").forEach {
+                Text(it, color = CYAN, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            }
+        }
+    }
+}
+
+@Composable
 fun Screen(e: Engine) {
     val ctx = LocalContext.current
     var settings by remember { mutableStateOf(false) }
-    var input by remember { mutableStateOf("") }
+    var tab by remember { mutableStateOf("chat") }
     var now by remember { mutableStateOf("") }
     val t = remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
@@ -297,51 +340,63 @@ fun Screen(e: Engine) {
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         if (it) e.start() else e.error = "মাইক পারমিশন দরকার"
     }
-    val ls = rememberLazyListState()
-    LaunchedEffect(e.log.size) { if (e.log.isNotEmpty()) ls.animateScrollToItem(e.log.lastIndex) }
+    val mic = {
+        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) e.start()
+        else perm.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    val red = Color(0xFFFF4D6D)
+    val amp = when (e.state) { S.SPEAKING -> 1f; S.LISTENING -> 0.55f; S.THINKING -> 0.3f; else -> 0.12f }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF050B14)) {
         Box(Modifier.fillMaxSize()) {
-            if (e.rain) Rain(t, Modifier.fillMaxSize())
-            Column(Modifier.fillMaxSize().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            if (!e.hud && e.rain) Rain(t, Modifier.fillMaxSize())
+            Column(Modifier.fillMaxSize().padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(now, color = CYAN, style = MaterialTheme.typography.titleMedium)
-                    Text("  ${e.persona} • ${e.voice}", color = CYAN.copy(0.6f), style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(10.dp))
+                    listOf(true to "new", false to "classic").forEach { (v, n) ->
+                        Text("● $n", color = if (e.hud == v) CYAN else CYAN.copy(0.35f), style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(end = 8.dp).clickable { e.hud = v; e.save() })
+                    }
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = { settings = true }) { Text("⚙", color = CYAN) }
                 }
-                Angel(t, e.state, Modifier.weight(1f).fillMaxWidth().clickable(
-                    interactionSource = remember { MutableInteractionSource() }, indication = null) { e.interrupt() })
-                Text("● ${e.state.label}", color = CYAN)
+                Box(Modifier.weight(1f).fillMaxWidth().then(if (e.hud) Modifier.chamfer() else Modifier).padding(6.dp)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { e.interrupt() }) {
+                    if (e.hud) Aurora(t, amp, Modifier.fillMaxSize())
+                    Angel(t, e.state, Modifier.fillMaxSize())
+                    Text("● ${e.state.label}", color = CYAN, modifier = Modifier.align(Alignment.BottomCenter))
+                }
                 if (e.note.isNotEmpty()) Text(e.note, color = CYAN.copy(0.6f), style = MaterialTheme.typography.bodySmall)
-                if (e.error.isNotEmpty()) Text(e.error, color = Color(0xFFFF6B6B), style = MaterialTheme.typography.bodySmall)
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 110.dp).background(Color(0x99050B14)), state = ls) {
-                    items(e.log) { m ->
-                        Text(m.second, color = if (m.first == "user") Color.White else CYAN, modifier = Modifier.padding(3.dp))
+                if (e.error.isNotEmpty()) Text(e.error, color = red, style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.chamfer(18f, red).clickable { e.stop() }.padding(horizontal = 30.dp, vertical = 12.dp)) {
+                        Text("TERMINATE", color = red)
                     }
+                    Spacer(Modifier.width(14.dp))
+                    Button(onClick = { mic() }, shape = CircleShape, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(52.dp)) { Text("🎤") }
                 }
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(input, { input = it }, Modifier.weight(1f), singleLine = true,
-                        placeholder = { Text("টাইপ করে বলুন…") })
-                    TextButton(onClick = { e.sendText(input); input = "" }) { Text("➤", color = CYAN) }
-                }
-                Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { e.stop() }, border = BorderStroke(1.dp, Color(0xFFFF4D6D))) {
-                        Text("TERMINATE", color = Color(0xFFFF4D6D))
+                if (e.hud) {
+                    Chips(listOf("chat", "hub", "stats"), tab) { tab = it }
+                    Box(Modifier.fillMaxWidth().height(190.dp)) {
+                        when (tab) {
+                            "chat" -> ChatPane(e)
+                            "hub" -> Hub(t, e.state, e.memory.size, Modifier.fillMaxSize())
+                            else -> StatsPane(e, t)
+                        }
                     }
-                    Spacer(Modifier.width(16.dp))
-                    Button(onClick = {
-                        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) e.start()
-                        else perm.launch(Manifest.permission.RECORD_AUDIO)
-                    }) { Text("🎤") }
-                }
+                } else ChatPane(e, Modifier.fillMaxWidth().height(190.dp))
             }
         }
     }
+    if (settings) SettingsDialog(e) { settings = false }
+}
 
-    if (settings) AlertDialog(
-        onDismissRequest = { e.save(); settings = false },
-        confirmButton = { TextButton(onClick = { e.save(); settings = false }) { Text("Save") } },
+@Composable
+fun SettingsDialog(e: Engine, close: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = { e.save(); close() },
+        confirmButton = { TextButton(onClick = { e.save(); close() }) { Text("Save") } },
         dismissButton = { TextButton(onClick = { e.log.clear() }) { Text("Chat মুছুন") } },
         title = { Text("Settings") },
         text = {
@@ -362,8 +417,12 @@ fun Screen(e: Engine) {
                 Text("ভাষা", Modifier.padding(top = 8.dp))
                 Chips(listOf("bn-BD", "en-US"), e.lang) { e.lang = it }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                    Text("Hacker rain ব্যাকগ্রাউন্ড", Modifier.weight(1f))
+                    Text("Hacker rain (classic মোডে)", Modifier.weight(1f))
                     Switch(e.rain, { e.rain = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("মেমোরি: ${e.memory.size} টি তথ্য", Modifier.weight(1f))
+                    TextButton(onClick = { e.clearMem() }) { Text("মুছুন") }
                 }
             }
         }
