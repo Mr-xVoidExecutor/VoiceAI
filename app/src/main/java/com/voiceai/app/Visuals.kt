@@ -56,7 +56,7 @@ fun Angel(t: State<Float>, state: S, modifier: Modifier = Modifier) {
         val sc = min(size.width / 100f, size.height / 120f)
         val ox = (size.width - 100f * sc) / 2f
         val oy = (size.height - 120f * sc) / 2f
-        withTransform({ translate(ox, oy); scale(sc, Offset.Zero) }) {
+        withTransform({ translate(ox, oy); scale(sc, sc, Offset.Zero) }) {
             val ar = 52f + 6f * amp * pulse
             drawCircle(Brush.radialGradient(listOf(CYAN.copy(0.30f), CYAN.copy(0.08f), Color.Transparent), Offset(50f, 62f), ar), ar, Offset(50f, 62f))
             val flap = sin(tt * 2.2f) * (1f + amp)
