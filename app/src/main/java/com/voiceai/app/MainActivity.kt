@@ -361,10 +361,26 @@ fun Screen(e: Engine) {
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = { settings = true }) { Text("⚙", color = CYAN) }
                 }
-                Box(Modifier.weight(1f).fillMaxWidth().then(if (e.hud) Modifier.chamfer() else Modifier).padding(6.dp)
+                Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 4.dp)
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { e.interrupt() }) {
-                    if (e.hud) Aurora(t, amp, Modifier.fillMaxSize())
-                    Angel(t, e.state, Modifier.fillMaxSize())
+                    if (e.hud) {
+                        Row(Modifier.fillMaxSize()) {
+                            Column(Modifier.width(76.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { DnaPanel(t, Modifier.fillMaxSize()) }
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { BarsPanel(t, amp, Modifier.fillMaxSize()) }
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { OrangeLinePanel(t, Modifier.fillMaxSize()) }
+                            }
+                            Box(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 4.dp)) {
+                                HoloFace(t, e.state, Modifier.fillMaxSize())
+                                Platform(t, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(70.dp))
+                            }
+                            Column(Modifier.width(76.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { EcgPanel(t, amp, Modifier.fillMaxSize()) }
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { WavePanel(t, amp, Modifier.fillMaxSize()) }
+                                HudPanel(Modifier.weight(1f).fillMaxWidth()) { GaugePanel(t, amp, Modifier.fillMaxSize()) }
+                            }
+                        }
+                    } else HoloFace(t, e.state, Modifier.fillMaxSize())
                     Text("● ${e.state.label}", color = CYAN, modifier = Modifier.align(Alignment.BottomCenter))
                 }
                 if (e.note.isNotEmpty()) Text(e.note, color = CYAN.copy(0.6f), style = MaterialTheme.typography.bodySmall)
